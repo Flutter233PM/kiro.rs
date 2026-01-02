@@ -2,6 +2,7 @@
   "alwaysApprovedTools": [
     "filesystem-read",
     "filesystem-create",
-    "terminal-execute"
+    "terminal-execute",
+    "filesystem-edit_search"
   ]
 }

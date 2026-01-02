@@ -26,11 +26,12 @@ RUN touch src/main.rs && \
 # ============================================
 FROM debian:bookworm-slim
 
-# 安装运行时依赖（SSL 证书等）
+# 安装运行时依赖（SSL 证书、curl 用于健康检查）
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
-        libssl3 && \
+        libssl3 \
+        curl && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -47,11 +48,11 @@ RUN useradd -r -s /bin/false kiro && \
 USER kiro
 
 # 默认端口
-EXPOSE 8990
+EXPOSE 18990
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8990/v1/models || exit 1
+    CMD curl -f http://localhost:18990/v1/models || exit 1
 
 # 启动命令
 ENTRYPOINT ["/app/kiro-rs"]
