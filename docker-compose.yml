@@ -1,0 +1,30 @@
+services:
+  kiro-rs:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kiro-rs
+    restart: unless-stopped
+    ports:
+      - "8990:8990"
+    volumes:
+      # 挂载配置文件（必须）
+      - ./config/config.json:/app/config/config.json:ro
+      - ./config/credentials.json:/app/config/credentials.json:rw
+    environment:
+      - RUST_LOG=info
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8990/v1/models"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    # 资源限制（可选，根据需要调整）
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 128M
