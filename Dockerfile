@@ -1,7 +1,7 @@
 # ============================================
 # Stage 1: Builder - 构建 Rust 应用
 # ============================================
-FROM rust:1.83-bookworm AS builder
+FROM rust:latest AS builder
 
 WORKDIR /app
 
