@@ -147,9 +147,10 @@ pub fn convert_request(req: &MessagesRequest) -> Result<ConversionResult, Conver
 
     // 6. 转换工具定义
     let mut tools = convert_tools(&req.tools);
+// 7. 构建历史消息（需要先构建，以便收集历史中使用的工具）
+    let mut history = build_history(req, &model_id)?;
+    normalize_history_image_messages(&mut history);
 
-    // 7. 构建历史消息（需要先构建，以便收集历史中使用的工具）
-    let history = build_history(req, &model_id)?;
 
     // 8. 收集历史中使用的工具名称，为缺失的工具生成占位符定义
     // Kiro API 要求：历史消息中引用的工具必须在 tools 列表中有定义
@@ -188,6 +189,8 @@ pub fn convert_request(req: &MessagesRequest) -> Result<ConversionResult, Conver
     let mut user_input = UserInputMessage::new(content, &model_id)
         .with_context(context)
         .with_origin("AI_EDITOR");
+
+    normalize_image_placeholder(&mut user_input.content, !images.is_empty());
 
     if !images.is_empty() {
         user_input = user_input.with_images(images);
@@ -356,6 +359,26 @@ fn generate_thinking_prefix(thinking: &Option<Thinking>) -> Option<String> {
 /// 检查内容是否已包含thinking标签
 fn has_thinking_tags(content: &str) -> bool {
     content.contains("<thinking_mode>") || content.contains("<max_thinking_length>")
+}
+
+fn normalize_image_placeholder(content: &mut String, has_images: bool) {
+    if !has_images {
+        return;
+    }
+    if content.trim().is_empty() {
+        *content = "(image)".to_string();
+    }
+}
+
+fn normalize_history_image_messages(history: &mut [Message]) {
+    for msg in history {
+        if let Message::User(user_msg) = msg {
+            normalize_image_placeholder(
+                &mut user_msg.user_input_message.content,
+                !user_msg.user_input_message.images.is_empty(),
+            );
+        }
+    }
 }
 
 /// 构建历史消息
@@ -719,6 +742,102 @@ mod tests {
             tools.iter().any(|t| t.tool_specification.name == "read"),
             "tools 列表应包含 'read' 工具的占位符定义"
         );
+    }
+
+    #[test]
+    fn test_normalize_history_user_image_message_empty_content() {
+        use super::super::types::Message as AnthropicMessage;
+
+        // 历史中出现 user 消息：images 非空，但文本 content 为空字符串
+        // 这是上游 Kiro 400 的触发条件，期望被规范化成 "(image)"
+        let req = MessagesRequest {
+            model: "claude-sonnet-4".to_string(),
+            max_tokens: 1024,
+            messages: vec![
+                AnthropicMessage {
+                    role: "user".to_string(),
+                    content: serde_json::json!([
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": "AQ=="
+                            }
+                        },
+                        {"type": "text", "text": ""}
+                    ]),
+                },
+                AnthropicMessage {
+                    role: "assistant".to_string(),
+                    content: serde_json::json!({"type": "text", "text": "OK"}),
+                },
+                // currentMessage
+                AnthropicMessage {
+                    role: "user".to_string(),
+                    content: serde_json::json!("next"),
+                },
+            ],
+            stream: false,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            thinking: None,
+            metadata: None,
+        };
+
+        let result = convert_request(&req).unwrap();
+
+        let history = &result.conversation_state.history;
+        assert_eq!(history.len(), 2);
+        match &history[0] {
+            Message::User(user_msg) => {
+                assert_eq!(user_msg.user_input_message.content, "(image)");
+                assert!(!user_msg.user_input_message.images.is_empty());
+            }
+            _ => panic!("expected first history message to be user"),
+        }
+    }
+
+    #[test]
+    fn test_normalize_history_user_text_unchanged() {
+        use super::super::types::Message as AnthropicMessage;
+
+        // 纯文本历史消息不应被修改
+        let req = MessagesRequest {
+            model: "claude-sonnet-4".to_string(),
+            max_tokens: 1024,
+            messages: vec![
+                AnthropicMessage {
+                    role: "user".to_string(),
+                    content: serde_json::json!("hello"),
+                },
+                AnthropicMessage {
+                    role: "assistant".to_string(),
+                    content: serde_json::json!({"type": "text", "text": "OK"}),
+                },
+                // currentMessage
+                AnthropicMessage {
+                    role: "user".to_string(),
+                    content: serde_json::json!("next"),
+                },
+            ],
+            stream: false,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            thinking: None,
+            metadata: None,
+        };
+
+        let result = convert_request(&req).unwrap();
+
+        let history = &result.conversation_state.history;
+        assert_eq!(history.len(), 2);
+        match &history[0] {
+            Message::User(user_msg) => assert_eq!(user_msg.user_input_message.content, "hello"),
+            _ => panic!("expected first history message to be user"),
+        }
     }
 
     #[test]
