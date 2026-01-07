@@ -177,7 +177,13 @@ pub fn convert_request(req: &MessagesRequest) -> Result<ConversionResult, Conver
 
     // 10. 构建当前消息
     // 保留文本内容，即使有工具结果也不丢弃用户文本
-    let content = text_content;
+    // 当只有图片没有文本时，Kiro API 要求 content 不能为空
+    // 使用空格作为占位符，避免 "Improperly formed request" 错误
+    let content = if text_content.is_empty() && !images.is_empty() {
+        " ".to_string() // 只有图片时使用空格作为占位符
+    } else {
+        text_content
+    };
 
     let mut user_input = UserInputMessage::new(content, &model_id)
         .with_context(context)
