@@ -92,11 +92,8 @@ fn normalize_image_only_request(value: &mut Value) {
         return;
     };
 
-    // 只要有 image 就确保有 text（不再依赖“纯图片识别”）
-    ensure_text_block_if_has_image(content);
-
-    // 纯图片时再移除 tools/tool_choice（保守：只有 image-only 触发）
-    let is_image_only_now = {
+    // 先判断原始是否“纯图片”（用于决定是否移除 tools/tool_choice）
+    let was_image_only = {
         let Value::Array(arr) = content else { false };
         let mut has_image = false;
         let mut has_text = false;
@@ -112,10 +109,55 @@ fn normalize_image_only_request(value: &mut Value) {
         has_image && !has_text
     };
 
-    if is_image_only_now {
+    // 只要有 image 就确保有 text
+    ensure_text_block_if_has_image(content);
+
+    // 只有“原始纯图片输入”才移除 tools/tool_choice
+    if was_image_only {
         root.remove("tools");
         root.remove("tool_choice");
     }
+}
+
+fn debug_last_user_content_types(value: &Value) {
+    let Value::Object(root) = value else {
+        return;
+    };
+    let Some(Value::Array(messages)) = root.get("messages") else {
+        return;
+    };
+    let Some(Value::Object(last_msg)) = messages.last() else {
+        return;
+    };
+    let is_user = matches!(last_msg.get("role"), Some(Value::String(r)) if r == "user");
+    if !is_user {
+        return;
+    }
+    let Some(content) = last_msg.get("content") else {
+        return;
+    };
+    let Value::Array(arr) = content else {
+        tracing::debug!("last user content is not array");
+        return;
+    };
+
+    let mut types: Vec<String> = Vec::new();
+    for item in arr.iter() {
+        match item {
+            Value::Object(obj) => {
+                if let Some(Value::String(t)) = obj.get("type") {
+                    types.push(t.clone());
+                } else {
+                    types.push("<missing-type>".to_string());
+                }
+            }
+            other => {
+                types.push(format!("<non-object:{}>", other));
+            }
+        }
+    }
+
+    tracing::debug!(content_types = %types.join(","), "last user content block types");
 }
 
 use super::converter::{ConversionError, convert_request};
@@ -192,6 +234,11 @@ pub async fn post_messages(
     };
     scrub_undefined(&mut payload_value);
     normalize_image_only_request(&mut payload_value);
+
+    if tracing::enabled!(tracing::Level::DEBUG) {
+        debug_last_user_content_types(&payload_value);
+    }
+
     payload = match serde_json::from_value(payload_value) {
         Ok(v) => v,
         Err(e) => {
