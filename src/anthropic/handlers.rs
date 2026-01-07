@@ -24,33 +24,19 @@ fn scrub_undefined(value: &mut Value) {
     match value {
         Value::String(_) => {}
         Value::Array(arr) => {
-            let mut idx = 0;
-            while idx < arr.len() {
-                let remove = matches!(&arr[idx], Value::String(s) if s == "[undefined]");
-                if remove {
-                    arr.remove(idx);
-                    continue;
-                }
-                scrub_undefined(&mut arr[idx]);
-                idx += 1;
+            // 先递归清洗，再删除 "[undefined]"，避免跳过元素
+            for v in arr.iter_mut() {
+                scrub_undefined(v);
             }
+            arr.retain(|v| !matches!(v, Value::String(s) if s == "[undefined]"));
         }
         Value::Object(map) => {
-            let keys: Vec<String> = map.keys().cloned().collect();
-            for key in keys {
-                let remove = match map.get_mut(&key) {
-                    Some(Value::String(s)) if s == "[undefined]" => true,
-                    Some(v) => {
-                        scrub_undefined(v);
-                        false
-                    }
-                    None => false,
-                };
-
-                if remove {
-                    map.remove(&key);
-                }
+            // 递归清洗
+            for v in map.values_mut() {
+                scrub_undefined(v);
             }
+            // 删除值为 "[undefined]" 的字段
+            map.retain(|_, v| !matches!(v, Value::String(s) if s == "[undefined]"));
         }
         _ => {}
     }
