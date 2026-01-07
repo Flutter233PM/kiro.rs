@@ -20,6 +20,38 @@ use std::time::Duration;
 use tokio::time::interval;
 use uuid::Uuid;
 
+fn redact_image_base64_for_log(request_body: &str) -> String {
+    let Ok(mut v) = serde_json::from_str::<Value>(request_body) else {
+        return "<non-json request body>".to_string();
+    };
+
+    fn redact_value(value: &mut Value) {
+        match value {
+            Value::Array(arr) => {
+                for item in arr.iter_mut() {
+                    redact_value(item);
+                }
+            }
+            Value::Object(map) => {
+                for (k, child) in map.iter_mut() {
+                    if k == "bytes" {
+                        if let Value::String(s) = child {
+                            let len = s.len();
+                            *child = Value::String(format!("<redacted len={}>", len));
+                        }
+                    } else {
+                        redact_value(child);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    redact_value(&mut v);
+    serde_json::to_string(&v).unwrap_or_else(|_| "<failed to serialize redacted json>".to_string())
+}
+
 fn scrub_undefined(value: &mut Value) {
     match value {
         Value::String(_) => {}
@@ -66,7 +98,7 @@ fn ensure_text_block_if_has_image(content: &mut Value) {
 
     // 只要包含图片但没有 text，就补一个最小 text block
     if has_image && !has_text {
-        arr.push(json!({"type": "text", "text": " "}));
+        arr.push(json!({"type": "text", "text": "(image)"}));
     }
 }
 
@@ -93,20 +125,22 @@ fn normalize_image_only_request(value: &mut Value) {
     };
 
     // 先判断原始是否“纯图片”（用于决定是否移除 tools/tool_choice）
-    let was_image_only = {
-        let Value::Array(arr) = content else { false };
-        let mut has_image = false;
-        let mut has_text = false;
-        for item in arr.iter() {
-            let Value::Object(obj) = item else { continue };
-            let Some(Value::String(t)) = obj.get("type") else { continue };
-            match t.as_str() {
-                "image" => has_image = true,
-                "text" => has_text = true,
-                _ => {}
+    let was_image_only = match content {
+        Value::Array(arr) => {
+            let mut has_image = false;
+            let mut has_text = false;
+            for item in arr.iter() {
+                let Value::Object(obj) = item else { continue };
+                let Some(Value::String(t)) = obj.get("type") else { continue };
+                match t.as_str() {
+                    "image" => has_image = true,
+                    "text" => has_text = true,
+                    _ => {}
+                }
             }
+            has_image && !has_text
         }
-        has_image && !has_text
+        _ => false,
     };
 
     // 只要有 image 就确保有 text
@@ -317,8 +351,13 @@ pub async fn post_messages(
                 .into_response();
         }
     };
+if tracing::enabled!(tracing::Level::DEBUG) {
+        // 避免把 images[].source.bytes/base64 直接打进日志
+        // 这里只记录长度，必要时可再加更细粒度字段日志
+        let redacted = redact_image_base64_for_log(&request_body);
+        tracing::debug!("Kiro request body (redacted): {}", redacted);
+    }
 
-    tracing::debug!("Kiro request body: {}", request_body);
 
     // 估算输入 tokens
     let input_tokens = token::count_all_tokens(

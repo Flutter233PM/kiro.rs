@@ -180,7 +180,7 @@ pub fn convert_request(req: &MessagesRequest) -> Result<ConversionResult, Conver
     // 当只有图片没有文本时，Kiro API 要求 content 不能为空
     // 使用空格作为占位符，避免 "Improperly formed request" 错误
     let content = if text_content.is_empty() && !images.is_empty() {
-        " ".to_string() // 只有图片时使用空格作为占位符
+        "(image)".to_string() // 只有图片时使用占位符
     } else {
         text_content
     };
