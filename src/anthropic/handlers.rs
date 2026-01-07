@@ -42,30 +42,32 @@ fn scrub_undefined(value: &mut Value) {
     }
 }
 
-fn is_image_only_content(content: &Value) -> bool {
+fn ensure_text_block_if_has_image(content: &mut Value) {
     let Value::Array(arr) = content else {
-        return false;
+        return;
     };
 
     let mut has_image = false;
     let mut has_text = false;
 
-    for item in arr {
-        if let Value::Object(obj) = item {
-            if let Some(Value::String(t)) = obj.get("type") {
-                match t.as_str() {
-                    "image" => has_image = true,
-                    "text" => {
-                        // 有 text 块就不算“纯图片”
-                        has_text = true;
-                    }
-                    _ => {}
-                }
-            }
+    for item in arr.iter() {
+        let Value::Object(obj) = item else {
+            continue;
+        };
+        let Some(Value::String(t)) = obj.get("type") else {
+            continue;
+        };
+        match t.as_str() {
+            "image" => has_image = true,
+            "text" => has_text = true,
+            _ => {}
         }
     }
 
-    has_image && !has_text
+    // 只要包含图片但没有 text，就补一个最小 text block
+    if has_image && !has_text {
+        arr.push(json!({"type": "text", "text": " "}));
+    }
 }
 
 fn normalize_image_only_request(value: &mut Value) {
@@ -73,7 +75,6 @@ fn normalize_image_only_request(value: &mut Value) {
         return;
     };
 
-    // 找最后一条 user message
     let Some(Value::Array(messages)) = root.get_mut("messages") else {
         return;
     };
@@ -82,7 +83,6 @@ fn normalize_image_only_request(value: &mut Value) {
         return;
     };
 
-    // 仅处理 role=user
     let is_user = matches!(last_msg.get("role"), Some(Value::String(r)) if r == "user");
     if !is_user {
         return;
@@ -92,18 +92,30 @@ fn normalize_image_only_request(value: &mut Value) {
         return;
     };
 
-    if !is_image_only_content(content) {
-        return;
-    }
+    // 只要有 image 就确保有 text（不再依赖“纯图片识别”）
+    ensure_text_block_if_has_image(content);
 
-    // A) 纯图片输入：补一个最小 text block，提升兼容性
-    if let Value::Array(arr) = content {
-        arr.push(json!({"type": "text", "text": " "}));
-    }
+    // 纯图片时再移除 tools/tool_choice（保守：只有 image-only 触发）
+    let is_image_only_now = {
+        let Value::Array(arr) = content else { false };
+        let mut has_image = false;
+        let mut has_text = false;
+        for item in arr.iter() {
+            let Value::Object(obj) = item else { continue };
+            let Some(Value::String(t)) = obj.get("type") else { continue };
+            match t.as_str() {
+                "image" => has_image = true,
+                "text" => has_text = true,
+                _ => {}
+            }
+        }
+        has_image && !has_text
+    };
 
-    // B) 纯图片输入：移除 tools/tool_choice，避免上游严格校验报 400
-    root.remove("tools");
-    root.remove("tool_choice");
+    if is_image_only_now {
+        root.remove("tools");
+        root.remove("tool_choice");
+    }
 }
 
 use super::converter::{ConversionError, convert_request};
