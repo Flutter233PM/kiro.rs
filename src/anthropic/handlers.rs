@@ -42,6 +42,70 @@ fn scrub_undefined(value: &mut Value) {
     }
 }
 
+fn is_image_only_content(content: &Value) -> bool {
+    let Value::Array(arr) = content else {
+        return false;
+    };
+
+    let mut has_image = false;
+    let mut has_text = false;
+
+    for item in arr {
+        if let Value::Object(obj) = item {
+            if let Some(Value::String(t)) = obj.get("type") {
+                match t.as_str() {
+                    "image" => has_image = true,
+                    "text" => {
+                        // 有 text 块就不算“纯图片”
+                        has_text = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    has_image && !has_text
+}
+
+fn normalize_image_only_request(value: &mut Value) {
+    let Value::Object(root) = value else {
+        return;
+    };
+
+    // 找最后一条 user message
+    let Some(Value::Array(messages)) = root.get_mut("messages") else {
+        return;
+    };
+
+    let Some(Value::Object(last_msg)) = messages.last_mut() else {
+        return;
+    };
+
+    // 仅处理 role=user
+    let is_user = matches!(last_msg.get("role"), Some(Value::String(r)) if r == "user");
+    if !is_user {
+        return;
+    }
+
+    let Some(content) = last_msg.get_mut("content") else {
+        return;
+    };
+
+    if !is_image_only_content(content) {
+        return;
+    }
+
+    // A) 纯图片输入：补一个最小 text block，提升兼容性
+    if let Value::Array(arr) = content {
+        arr.push(json!({"type": "text", "text": " "}));
+    }
+
+    // B) 纯图片输入：移除 tools/tool_choice，避免上游严格校验报 400
+    root.remove("tools");
+    root.remove("tool_choice");
+}
+
 use super::converter::{ConversionError, convert_request};
 use super::middleware::AppState;
 use super::stream::{SseEvent, StreamContext};
@@ -115,6 +179,7 @@ pub async fn post_messages(
         }
     };
     scrub_undefined(&mut payload_value);
+    normalize_image_only_request(&mut payload_value);
     payload = match serde_json::from_value(payload_value) {
         Ok(v) => v,
         Err(e) => {
