@@ -1,0 +1,9 @@
+{
+  "alwaysApprovedTools": [
+    "terminal-execute",
+    "filesystem-read",
+    "codebase-search",
+    "filesystem-edit_search",
+    "ace-text_search"
+  ]
+}

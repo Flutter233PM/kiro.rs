@@ -15,10 +15,46 @@ use axum::{
 };
 use bytes::Bytes;
 use futures::{Stream, StreamExt, stream};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::time::interval;
 use uuid::Uuid;
+
+fn scrub_undefined(value: &mut Value) {
+    match value {
+        Value::String(_) => {}
+        Value::Array(arr) => {
+            let mut idx = 0;
+            while idx < arr.len() {
+                let remove = matches!(&arr[idx], Value::String(s) if s == "[undefined]");
+                if remove {
+                    arr.remove(idx);
+                    continue;
+                }
+                scrub_undefined(&mut arr[idx]);
+                idx += 1;
+            }
+        }
+        Value::Object(map) => {
+            let keys: Vec<String> = map.keys().cloned().collect();
+            for key in keys {
+                let remove = match map.get_mut(&key) {
+                    Some(Value::String(s)) if s == "[undefined]" => true,
+                    Some(v) => {
+                        scrub_undefined(v);
+                        false
+                    }
+                    None => false,
+                };
+
+                if remove {
+                    map.remove(&key);
+                }
+            }
+        }
+        _ => {}
+    }
+}
 
 use super::converter::{ConversionError, convert_request};
 use super::middleware::AppState;
@@ -76,6 +112,37 @@ pub async fn post_messages(
     State(state): State<AppState>,
     JsonExtractor(payload): JsonExtractor<MessagesRequest>,
 ) -> Response {
+    let mut payload = payload;
+
+    let mut payload_value = match serde_json::to_value(&payload) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("序列化入站请求失败: {}", e);
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse::new(
+                    "invalid_request_error",
+                    format!("请求体解析失败: {}", e),
+                )),
+            )
+                .into_response();
+        }
+    };
+    scrub_undefined(&mut payload_value);
+    payload = match serde_json::from_value(payload_value) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("入站请求清洗后反序列化失败: {}", e);
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse::new(
+                    "invalid_request_error",
+                    format!("请求体字段类型错误: {}", e),
+                )),
+            )
+                .into_response();
+        }
+    };
     tracing::info!(
         model = %payload.model,
         max_tokens = %payload.max_tokens,
@@ -484,7 +551,6 @@ async fn handle_non_stream_request(
 
 /// POST /v1/messages/count_tokens
 ///
-/// 计算消息的 token 数量
 pub async fn count_tokens(
     JsonExtractor(payload): JsonExtractor<CountTokensRequest>,
 ) -> impl IntoResponse {
@@ -505,3 +571,46 @@ pub async fn count_tokens(
         input_tokens: total_tokens.max(1) as i32,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_scrub_undefined_recursive_removes_fields() {
+        let raw = serde_json::json!({
+            "model": "claude-sonnet-4.5",
+            "max_tokens": 16,
+            "stream": false,
+            "temperature": "[undefined]",
+            "top_k": "[undefined]",
+            "stop_sequences": "[undefined]",
+            "tool_choice": {"type":"auto","disable_parallel_tool_use":"[undefined]"},
+            "system": [{"type":"text","text":"x","cache_control":"[undefined]"}],
+            "messages": [{
+                "role": "user",
+                "content": [{
+                    "type": "image",
+                    "source": {"type":"base64","media_type":"image/png","data":"..."},
+                    "cache_control": "[undefined]"
+                }]
+            }]
+        });
+
+        let mut v = raw;
+        scrub_undefined(&mut v);
+
+        let s = serde_json::to_string(&v).unwrap();
+        assert!(!s.contains("\"[undefined]\""));
+        assert!(!s.contains("temperature"));
+        assert!(!s.contains("top_k"));
+        assert!(!s.contains("stop_sequences"));
+        assert!(!s.contains("disable_parallel_tool_use"));
+        assert!(!s.contains("cache_control"));
+
+        let req: MessagesRequest = serde_json::from_value(v).unwrap();
+        assert_eq!(req.messages.len(), 1);
+        assert_eq!(req.messages[0].role, "user");
+    }
+}
+
