@@ -57,6 +57,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           push: true
+          provenance: false
           tags: ghcr.io/${{ steps.image_owner.outputs.owner }}/kiro-rs:${{ github.event.inputs.version || github.ref_name }}-${{ matrix.arch }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
