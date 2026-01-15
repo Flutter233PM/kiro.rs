@@ -3,13 +3,13 @@ name: Build and Push Docker Images
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version tag for Docker images (e.g., 2025.12.1)'
+        description: "Version tag for Docker images (e.g., 2025.12.1)"
         required: true
-        default: '2026.1.1'
+        default: "2026.1.1"
 
 permissions:
   contents: read
@@ -44,6 +44,11 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ github.token }}
 
+      - name: Normalize image owner (lowercase)
+        id: image_owner
+        shell: bash
+        run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -52,7 +57,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/kiro-rs:${{ github.event.inputs.version || github.ref_name }}-${{ matrix.arch }}
+          tags: ghcr.io/${{ steps.image_owner.outputs.owner }}/kiro-rs:${{ github.event.inputs.version || github.ref_name }}-${{ matrix.arch }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.description=Kiro.rs Docker Image
@@ -71,7 +76,8 @@ jobs:
       - name: Create and push multi-arch manifest
         run: |
           VERSION="${{ github.event.inputs.version || github.ref_name }}"
-          IMAGE="ghcr.io/${{ github.repository_owner }}/kiro-rs"
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+          IMAGE="ghcr.io/${OWNER}/kiro-rs"
 
           # Create manifest for version tag
           docker manifest create ${IMAGE}:${VERSION} \
